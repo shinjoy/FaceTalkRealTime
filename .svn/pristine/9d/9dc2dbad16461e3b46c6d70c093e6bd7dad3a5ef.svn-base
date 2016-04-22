@@ -1,0 +1,1807 @@
+package com.nomadsoft.chat.db.dao;
+
+import io.netty.channel.Channel;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.Map;
+import java.util.Set;
+
+import redis.clients.jedis.Jedis;
+
+import com.google.gson.Gson;
+import com.nomadsoft.chat.config.Config;
+import com.nomadsoft.chat.config.Constants;
+import com.nomadsoft.chat.db.dto.ChatReq;
+import com.nomadsoft.chat.db.dto.ChatRoom;
+import com.nomadsoft.chat.db.dto.Packet;
+import com.nomadsoft.chat.db.dto.Param;
+import com.nomadsoft.chat.db.dto.Push;
+import com.nomadsoft.chat.linkedNetwork.Client;
+import com.nomadsoft.chat.linkedNetwork.ClientPacketBufferThread;
+import com.nomadsoft.chat.log.Log;
+import com.nomadsoft.chat.openServer.ChatServerHandler;
+import com.nomadsoft.chat.openServer.ChatUserContext;
+import com.nomadsoft.chat.openServer.ProtocolType;
+import com.nomadsoft.chat.utility.ChatDate;
+import com.nomadsoft.chat.utility.MsgKey;
+import com.nomadsoft.redis.RedisClient;
+import com.nomadsoft.util.push.PushKey;
+import com.nomadsoft.util.push.PushType;
+
+public class ChatDao {	
+	public static void createChatRoom(Channel channel, int roomType, String reqKey, String memberList, String userId ) {
+		
+		Connection connection = DBConnectionPool.getConnection();				
+		try {
+			ArrayList<String> mList = new ArrayList<String>();
+			String[] list = memberList.split("[,]");			
+			for(String member : list) {				
+				if(mList.contains(member.trim()) == false) {
+					mList.add(member.trim());
+				}
+			}
+			
+	        String roomIdx = "";	        
+	        String title = "";
+	        String createrID = "";
+	        
+			if(mList.size() > 1) {
+				//1:1�� ��� ���� ������� ���� �ִ��� Ȯ��
+				if(roomType == 0 && mList.size() == 2) {					
+
+					String query = "select top 1 2 as CNT_ROOM, A.chat_room_seq from t_nf_chat_room A inner join t_nf_chat_member B on A.chat_room_seq = B.chat_room_seq"
+							+ " where chat_room_type = 0 and ((B.user_id =  '" + mList.get(0) +"' and A.owner_id = '" + mList.get(1)  + "') or (B.user_id = '" + mList.get(1)  + "' and A.owner_id = '" + mList.get(0)  + "'))"
+							+ " order by A.reg_date desc ";
+
+					Statement stmt = connection.createStatement();
+					ResultSet rs = stmt.executeQuery(query);
+
+					
+					
+					if(rs.next()) {
+						int CNT_ROOM = rs.getInt(1);
+						if(CNT_ROOM == 2) {
+							long eIdx = rs.getLong(2);	
+							query = "select * from t_nf_chat_room where chat_room_seq = " + eIdx;
+							
+							
+							Statement statement = connection.createStatement();
+							ResultSet rsRoom = statement.executeQuery(query);
+							
+							if(rsRoom.next()) {
+								roomIdx = String.valueOf(eIdx);
+								roomType = rsRoom.getInt("chat_room_type");
+								createrID = rsRoom.getString("owner_id");
+								title = rsRoom.getString("title"); 
+								
+						
+							}
+							statement.close();
+						}
+					}
+					stmt.close(); 
+				}
+				
+
+				if(roomIdx.equals("")) {
+					String query = "insert into t_nf_chat_room (owner_id, chat_room_type, title, reg_date) values(?, ?, ?,getdate())";
+					//SQLServerStatement.RETURN_GENERATED_KEYS
+					PreparedStatement stmt = connection.prepareStatement(query, 1);
+	
+					createrID = userId;
+					stmt.setString(1, createrID);
+					stmt.setInt(2, roomType);
+					stmt.setString(3, title);				
+					
+					stmt.executeUpdate();
+					 
+					ResultSet rs = stmt.getGeneratedKeys();
+					if (rs.next()){
+						long newIdx = rs.getLong(1);
+						roomIdx = String.valueOf(newIdx);
+						String insertQuery = "insert into t_nf_chat_member (chat_room_seq, user_id,reg_date) values (?, ?,getDate())";						
+						for(String member : mList) {
+							PreparedStatement insertStmt = connection.prepareStatement(insertQuery);
+							
+							insertStmt.setLong(1,newIdx);
+							insertStmt.setString(2, member.trim());
+							
+							insertStmt.executeUpdate();
+							insertStmt.close();
+						}
+			        }
+					
+					stmt.close();
+				}
+			}
+			
+			if(roomIdx.equals("") == false){
+				
+				//�� �������
+				String resTxt = "";
+				String query = "select CM.*, 0 as user_type, MX.gender, MX.user_name, MX.phone_number, 0 as group_seq, '' as group_name from t_nf_chat_member CM"
+						+ " left join t_nf_user MX on CM.user_id = MX.user_id"						
+						+ " where CM.chat_room_seq = ?";
+				
+				PreparedStatement stmt = connection.prepareStatement(query);
+				stmt.setLong(1, Long.valueOf(roomIdx));
+				ResultSet rs = stmt.executeQuery();	
+				ArrayList<HashMap<String, String>> array = new ArrayList<HashMap<String,String>>();
+				while(rs.next()) {
+					HashMap<String, String> map = new HashMap<String, String>();					
+					String user_id = rs.getString("user_id");
+				    String user_name = ChatDBhelper.getSafeString(rs.getString("user_name"));					 
+					String phone_number = ChatDBhelper.getSafeString(rs.getString("phone_number")); 
+					String user_type = ChatDBhelper.getSafeString(rs.getString("user_type"));
+					String group_id = ChatDBhelper.getSafeString(rs.getString("group_seq"));
+					String org_nm = ChatDBhelper.getSafeString(rs.getString("group_name"));
+					String gender = ChatDBhelper.getSafeString(Integer.toString(rs.getInt("gender")));
+					
+					map.put("user_id", user_id);
+					map.put("user_name", user_name);
+					map.put("phone_number", phone_number);
+					map.put("user_type", user_type);
+					map.put("group_id", group_id);
+					map.put("org_nm", org_nm);
+					map.put("gender", gender);
+					
+					array.add(map);
+				}
+				stmt.close(); 
+				
+				if(array.size() > 0) {
+					Gson gson = new Gson();
+					resTxt = gson.toJson(array);	
+				}
+				//////////
+				
+				Param param = new Param();
+				param.put("reqKey", reqKey);
+				param.put("result", "true");
+				param.put("roomIdx", roomIdx);
+				param.put("roomType", String.valueOf(roomType));
+				param.put("ownerID", createrID);
+				param.put("title", title);
+				param.put("memberInfo", resTxt);
+				
+				
+				
+				ChatServerHandler.sendData(channel, ProtocolType.ptChat
+						, ProtocolType.stChatCreateRoomRes, param);
+				
+				
+			} else {
+				
+				Param param = new Param();
+				param.put("reqKey", reqKey);
+				param.put("result", "false");
+				ChatServerHandler.sendData(channel, ProtocolType.ptChat
+						, ProtocolType.stChatCreateRoomRes, param);
+				
+
+			}
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+	}
+	
+	
+	public static void getRoomInfo(Channel channel, String reqKey, long roomIdx, String userId ) {
+		
+		Connection connection = DBConnectionPool.getConnection();				
+		try {			
+			String query = "select chat_room_seq, chat_room_type, owner_id, title  from t_nf_chat_room where chat_room_seq=?";
+							
+			
+			
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setLong(1, roomIdx);
+			
+			ResultSet rs = stmt.executeQuery();
+			
+			int roomType = 0;
+			String createrID = "";
+			String title = "";
+			
+			if(rs.next()) {
+				roomType = rs.getInt("chat_room_type");
+				createrID = rs.getString("owner_id");
+				title = rs.getString("title");	
+				
+			}
+			stmt.close(); 
+			
+			//�� ������� üũ.
+			boolean hasRoomMember = false;
+			query = "select chat_room_seq from t_nf_chat_member where chat_room_seq = ? and user_id = ?";
+			
+			stmt = connection.prepareStatement(query);
+			stmt.setLong(1, roomIdx);
+			stmt.setString(2, userId);
+			
+			rs = stmt.executeQuery();			
+			if(rs.next()) {
+				hasRoomMember = true;
+			}
+			stmt.close(); 
+
+			String resTxt = "";
+			if(hasRoomMember) {
+				query = "select CM.*, 0 as user_type, MX.gender ,MX.user_name, MX.phone_number,MX.photo, 0 as group_seq, '' as group_name from t_nf_chat_member CM"
+						+ " left join t_nf_user MX on CM.user_id = MX.user_id"						
+						+ " where CM.chat_room_seq = ?";
+				
+				
+				
+				stmt = connection.prepareStatement(query);
+				stmt.setLong(1, roomIdx);
+				
+				rs = stmt.executeQuery();		
+				
+			
+				
+				ArrayList<HashMap<String, String>> array = new ArrayList<HashMap<String,String>>();
+				while(rs.next()) {
+					
+					HashMap<String, String> map = new HashMap<String, String>();
+					
+					String user_id = rs.getString("user_id");
+				    String user_name = ChatDBhelper.getSafeString(rs.getString("user_name"));					 
+					String phone_number = ChatDBhelper.getSafeString(rs.getString("phone_number")); 
+					String user_type = ChatDBhelper.getSafeString(rs.getString("user_type"));
+					String group_id = ChatDBhelper.getSafeString(rs.getString("group_seq"));
+					String org_nm = ChatDBhelper.getSafeString(rs.getString("group_name"));
+					String gender = ChatDBhelper.getSafeString(Integer.toString(rs.getInt("gender")));
+					
+					map.put("user_id", user_id);
+					map.put("user_name", user_name);
+					map.put("phone_number", phone_number);
+					map.put("user_type", user_type);
+					
+					map.put("group_id", group_id);
+					map.put("org_nm", org_nm);
+					map.put("gender", gender);
+			
+					array.add(map);
+				}
+				stmt.close(); 
+				
+				if(array.size() > 0) {
+					Gson gson = new Gson();
+					resTxt = gson.toJson(array);	
+				}
+			}
+			
+			
+			if(resTxt.equals("") == false){
+				
+				Param param = new Param();
+				param.put("reqKey", reqKey);
+				param.put("result", "true");
+				param.put("roomIdx", String.valueOf(roomIdx));
+				param.put("roomType", String.valueOf(roomType));
+				param.put("ownerID", createrID);
+				param.put("title", title);
+				param.put("memberInfo", resTxt);
+				//param.put("useMega", useMega);
+				
+				ChatServerHandler.sendData(channel, ProtocolType.ptChat
+						, ProtocolType.stChatRoomInfoRes, param);
+			} else {
+				Param param = new Param();
+				param.put("reqKey", reqKey);
+				param.put("result", "false");
+				param.put("roomIdx", String.valueOf(roomIdx));
+				param.put("roomType", String.valueOf(roomType));
+				param.put("ownerID", createrID);
+				param.put("title", title);
+				param.put("memberInfo", resTxt);
+				
+				ChatServerHandler.sendData(channel, ProtocolType.ptChat
+						, ProtocolType.stChatRoomInfoRes, param);
+				
+			}
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+	}
+	
+	public static void inviteMember(Channel channel,ChatUserContext chatUserContext
+			, String userId
+			, String reqKey, long roomIdx, String inviteUser ) {
+		
+		Connection connection = DBConnectionPool.getConnection();				
+		try {	
+			
+			String query = "select chat_room_seq from t_nf_chat_member where chat_room_seq = ? and user_id = ?";
+			ArrayList<String> memberList = new ArrayList<String>();
+			String[] list = inviteUser.split("[,]");			
+			for(String member : list) {				
+				
+				PreparedStatement stmt = connection.prepareStatement(query);
+				stmt.setLong(1, roomIdx);
+				stmt.setString(2, member);
+				ResultSet rs = stmt.executeQuery();
+				
+				if(rs.next()) {
+					//�̹��ִ°��.
+				} else {
+					//�߰�
+					String queryInsert = "insert into t_nf_chat_member (chat_room_seq, user_id, reg_date) values (?, ?,getDate())";
+					PreparedStatement stmtInsert = connection.prepareStatement(queryInsert);
+					stmtInsert.setLong(1, roomIdx);
+					stmtInsert.setString(2, member);
+					stmtInsert.executeUpdate();					
+					stmtInsert.close();
+					
+					memberList.add(member);					
+				}
+				stmt.close();
+			}
+						
+			String resTxt = "";
+			ArrayList<HashMap<String, String>> array = new ArrayList<HashMap<String,String>>();
+			ArrayList<HashMap<String, String>> userarray = new ArrayList<HashMap<String,String>>();
+			for(String member : memberList) {				
+				query = "select A.user_type, A.user_name, A.phone_number, A.gender, 0 as group_seq, '' as group_name from t_nf_user A "
+					
+						+ "where A.user_id = ? ";
+								
+				PreparedStatement stmt = connection.prepareStatement(query);
+				stmt.setString(1, member);
+				
+				ResultSet rs = stmt.executeQuery();			
+				if(rs.next()) {		
+					HashMap<String, String> map = new HashMap<String, String>();
+					HashMap<String, String> usermap = new HashMap<String, String>();
+					
+					String user_id = member;
+				    String user_name = rs.getString("user_name");
+					String IMG_REGDATE = ""; 
+					String phone_number = rs.getString("phone_number"); 
+					String user_type = rs.getString("user_type"); ;
+					String group_id = ChatDBhelper.getSafeString(rs.getString("group_seq"));
+					String org_nm = ChatDBhelper.getSafeString(rs.getString("group_name"));
+					String gender = ChatDBhelper.getSafeString(Integer.toString(rs.getInt("gender")));
+					
+					map.put("user_id", user_id);
+					map.put("user_name", user_name);
+					map.put("phone_number", phone_number);
+					map.put("user_type", user_type);
+					map.put("group_id", group_id);
+					map.put("org_nm", org_nm);
+					map.put("gender", gender);
+					usermap.put("gender", gender);
+					array.add(map);
+					userarray.add(usermap);
+				}
+				stmt.close(); 
+			}
+			
+			if(array.size() > 0) {
+				Gson gson = new Gson();
+				resTxt = gson.toJson(array);	
+			}
+			String userTxt="";
+			if(userarray.size()>0){
+				Gson gson = new Gson();
+				userTxt = gson.toJson(userarray);
+			}
+			
+			if(resTxt.equals("")) {
+				//����
+				if(channel != null) {
+					Param param = new Param();
+					param.put("reqKey", reqKey);
+					param.put("result", "false");
+					param.put("roomIdx", String.valueOf(roomIdx));
+					ChatServerHandler.sendData(channel, ProtocolType.ptChat
+							, ProtocolType.stChatRoomInviteRes, param);
+				}
+				
+			} else {				
+				String msgKey = MsgKey.getMsgKey();
+				String cType = "3";
+				String mType = "0";
+				
+				Date date = new Date();
+				String sDate = ChatDate.getFormatterServerDate().format(date);
+				
+				ChatMsgDao.sendMsg(chatUserContext, true
+						, sDate, msgKey,String.valueOf(roomIdx), mType, cType, userId
+						, resTxt, "", "", userTxt, "", date, "");				
+			}
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+	}
+	
+	
+	//나가기
+	public static void removeMember(Channel channel,ChatUserContext chatUserContext, String reqKey, long roomIdx, String userID, String memberID) {
+		
+		Connection connection = DBConnectionPool.getConnection();
+		try {
+
+			// 방이 있는지 확인
+			String query = "select chat_room_type, owner_id from t_nf_chat_room where chat_room_seq = ?";
+			PreparedStatement stmtRoom = connection.prepareStatement(query);
+			stmtRoom.setLong(1, roomIdx);
+			ResultSet rsRoom = stmtRoom.executeQuery();
+			if (rsRoom.next()) {
+				int roomType = rsRoom.getInt(1);
+				String ownerId = rsRoom.getString(2);
+				boolean isOwner = false;
+
+				if (memberID.equals(ownerId)) {
+					isOwner = true;
+				}
+
+				// 멤버 몇명 남았는지 확인
+				query = "select count(*) from t_nf_chat_member where chat_room_seq = ?";
+				PreparedStatement stmtCount = connection.prepareStatement(query);
+				stmtCount.setLong(1, roomIdx);
+				ResultSet countRoom = stmtCount.executeQuery();
+				int nowmemCount = 0;
+				if (countRoom.next()) {
+					nowmemCount = countRoom.getInt(1);
+				}
+				stmtCount.close();
+				if (nowmemCount <= 2) {// 두명남았는데 나가려고해
+					// 방장인지 확인해야해
+					String resTxt = "";
+					String userTxt="";
+					if (isOwner) {// 방장이면 방폭
+
+						query = "select A.user_id, 0 as user_type, B.gender, B.user_name, B.phone_number, 0 as group_seq, '' as group_name from t_nf_chat_member A "
+								+ "left join t_nf_user B on A.user_id = B.user_id " + "where A.chat_room_seq = ? ";
+
+						PreparedStatement stmt = connection.prepareStatement(query);
+						stmt.setLong(1, roomIdx);
+
+						ArrayList<HashMap<String, String>> mapList = new ArrayList<HashMap<String, String>>();
+						ArrayList<HashMap<String, String>> usermapList = new ArrayList<HashMap<String, String>>();
+						ResultSet rs = stmt.executeQuery();
+						while (rs.next()) {
+
+							HashMap<String, String> map = new HashMap<String, String>();
+							HashMap<String, String> usermap = new HashMap<String, String>();
+							String user_id = rs.getString("user_id");
+							String user_name = ChatDBhelper.getSafeString(rs.getString("user_name"));
+							String phone_number = ChatDBhelper.getSafeString(rs.getString("phone_number"));
+							String user_type = rs.getString("user_type");
+							String group_id = ChatDBhelper.getSafeString(rs.getString("group_seq"));
+							String org_nm = ChatDBhelper.getSafeString(rs.getString("group_name"));
+							String gender = ChatDBhelper.getSafeString(Integer.toString(rs.getInt("gender")));
+							map.put("user_id", user_id);
+							map.put("user_name", user_name);
+							map.put("phone_number", phone_number);
+							map.put("user_type", user_type);
+							map.put("group_id", group_id);
+							map.put("org_nm", org_nm);
+							map.put("gender", gender);
+							usermap.put("gender", gender);
+							mapList.add(map);
+							usermapList.add(usermap);
+						}
+						stmt.close();
+						Gson gson = new Gson();
+						resTxt = gson.toJson(mapList);
+						
+						gson = new Gson();
+						userTxt = gson.toJson(usermapList);
+
+						String msgKey = MsgKey.getMsgKey();
+						String mType = "0";
+						String cType = "4";
+						Date date = new Date();
+						String sDate = ChatDate.getFormatterServerDate().format(date);
+
+						ChatMsgDao.sendMsg(chatUserContext, true, sDate, msgKey, String.valueOf(roomIdx), mType, cType,
+								userID, resTxt, "", "0",userTxt , "", date, "");
+						// ������, ��� ����.
+						// �޽��� ����.
+						// tran ����.
+						query = "delete from t_nf_chat_tran where chat_room_seq = ? and chat_msg_key <> ?";
+						stmt = connection.prepareStatement(query);
+						stmt.setLong(1, roomIdx);
+						stmt.setString(2, msgKey);
+						stmt.executeUpdate();
+						stmt.close();
+
+						query = "delete from t_nf_chat_msg where chat_room_seq = ? and chat_msg_key <> ?";
+						stmt = connection.prepareStatement(query);
+						stmt.setLong(1, roomIdx);
+						stmt.setString(2, msgKey);
+						stmt.executeUpdate();
+						stmt.close();
+
+						query = "delete from t_nf_chat_member where chat_room_seq = ?";
+						stmt = connection.prepareStatement(query);
+						stmt.setLong(1, roomIdx);
+						stmt.executeUpdate();
+						stmt.close();
+
+						query = "delete from t_nf_chat_room where chat_room_seq = ?";
+						stmt = connection.prepareStatement(query);
+						stmt.setLong(1, roomIdx);
+						stmt.executeUpdate();
+						stmt.close();
+
+					} else {// 방장이 아니면
+
+						// 멤버에서 지움되
+						query = "delete from t_nf_chat_member where chat_room_seq = ? and user_id = ? ";
+						PreparedStatement stmt = connection.prepareStatement(query);
+						stmt = connection.prepareStatement(query);
+						stmt.setLong(1, roomIdx);
+						stmt.setString(2, memberID);
+						stmt.executeUpdate();
+						stmt.close();
+						//// 나가는사람 정보가져오기
+						query = "select user_id,user_name,phone_number,gender " 
+								+ "from t_nf_user " 
+								+ "where user_id = ? ";
+						stmt = connection.prepareStatement(query);
+						stmt.setString(1, memberID);
+
+						ArrayList<HashMap<String, String>> mapList = new ArrayList<HashMap<String, String>>();
+						ArrayList<HashMap<String, String>> usermapList = new ArrayList<HashMap<String, String>>();
+						ResultSet rs = stmt.executeQuery();
+						while (rs.next()) {
+
+							HashMap<String, String> map = new HashMap<String, String>();
+							HashMap<String, String> usermap = new HashMap<String, String>();
+
+							String user_id = rs.getString("user_id");
+							String user_name = ChatDBhelper.getSafeString(rs.getString("user_name"));
+							String phone_number = ChatDBhelper.getSafeString(rs.getString("phone_number"));
+							String gender = ChatDBhelper.getSafeString(Integer.toString(rs.getInt("gender")));
+							
+							map.put("user_id", user_id);
+							map.put("user_name", user_name);
+							map.put("phone_number", phone_number);
+							map.put("gender", gender);
+							usermap.put("gender", gender);
+							mapList.add(map);
+							usermapList.add(usermap);
+							
+
+						}
+						stmt.close();
+						Gson gson = new Gson();
+						resTxt = gson.toJson(mapList);
+						
+						gson = new Gson();
+						userTxt = gson.toJson(usermapList);
+						String msgKey = MsgKey.getMsgKey();
+						String mType = "0";
+						String cType = "4";
+
+						Date date = new Date();
+						String sDate = ChatDate.getFormatterServerDate().format(date);
+
+						ChatMsgDao.sendMsg(chatUserContext, true, sDate, msgKey, String.valueOf(roomIdx), mType, cType,
+								userID, resTxt, "", "0", userTxt , "", date, "");
+					}
+
+				} else {// 두명이상이야
+					String resTxt = "";
+					String userTxt="";
+					query = "DELETE FROM T_NF_CHAT_MEMBER WHERE chat_room_seq = ? and user_id= ?";
+					PreparedStatement stmt = connection.prepareStatement(query);
+					stmt = connection.prepareStatement(query);
+					stmt.setLong(1, roomIdx);
+					stmt.setString(2, memberID);
+					stmt.executeUpdate();
+					stmt.close(); // 일단 나를 지우고
+
+					ArrayList<HashMap<String, String>> mapList = new ArrayList<HashMap<String, String>>();
+					ArrayList<HashMap<String, String>> usermapList = new ArrayList<HashMap<String, String>>();
+					HashMap<String, String> map = new HashMap<String, String>();
+					HashMap<String, String> usermap = new HashMap<String, String>();
+					String user_name = "";
+					/// 나가는애 정보가져오기
+					query = "select user_name,gender from t_nf_user where user_id = ? ";
+					stmt = connection.prepareStatement(query);
+					stmt.setString(1, memberID);
+					ResultSet rs = stmt.executeQuery();
+
+					if (rs.next()) {
+						user_name = ChatDBhelper.getSafeString(rs.getString("user_name"));
+						String gender = ChatDBhelper.getSafeString(Integer.toString(rs.getInt("gender")));
+						
+						map.put("user_id", memberID);
+						map.put("user_name", user_name);
+						map.put("gender", gender);
+						usermap.put("gender", gender);
+						mapList.add(map);
+						usermapList.add(usermap);
+					}
+
+					stmt.close();
+					Gson gson = new Gson();
+					resTxt = gson.toJson(mapList);
+					gson = new Gson();
+					userTxt = gson.toJson(usermapList);
+
+					String msgKey = MsgKey.getMsgKey();
+					String mType = "0";
+					String cType = "4";
+					Date date = new Date();
+					String sDate = ChatDate.getFormatterServerDate().format(date);
+					
+
+					ChatMsgDao.sendMsg(chatUserContext, true, sDate, msgKey, String.valueOf(roomIdx), mType, cType,
+							userID, resTxt, "", "0", userTxt, "", date, "");
+					if (isOwner) {// 나간애가 방장아이디이면
+						// 가장 처음 접한애 아이디가져오기
+						query = "select top 1 m.user_id,u.user_name,u.gender  "
+								+ " from t_nf_chat_member as m left outer join "
+								+ " t_nf_ user as u on m.user_id = u.user_id "
+								+ " where m.chat_room_seq = ?  order by m.reg_date asc";
+
+						stmt = connection.prepareStatement(query);
+						stmt.setLong(1, roomIdx);
+
+						ResultSet nextUser = stmt.executeQuery();
+						String nextOwner = "";
+						String nextOwnerName = "";
+						String nextOwnergender = "";
+						if (nextUser.next()) {
+							nextOwner = nextUser.getString("user_id");
+							nextOwnerName = nextUser.getString("user_name");
+							nextOwnergender = Integer.toString(nextUser.getInt("gender"));
+						}
+
+						
+						stmt.close();
+						// 방정보 업데이트
+
+						query = " update t_nf_chat_room set owner_id = ? where chat_room_seq = ? ";
+						stmt = connection.prepareStatement(query);
+						stmt.setString(1, nextOwner);
+						stmt.setLong(2, roomIdx);
+						stmt.executeUpdate();
+						stmt.close(); // 다음애가 방장으로됫으니까
+						// 방장 바뀐거 알리기
+						msgKey = MsgKey.getMsgKey();
+						mType = "0";
+						cType = "10";
+						date = new Date();
+						sDate = ChatDate.getFormatterServerDate().format(date);
+						map.put("user_id", nextOwner);
+						map.put("user_name", nextOwnerName);
+						map.put("gender", nextOwnergender);
+						usermap.put("gender", nextOwnergender);
+
+						mapList.add(map);
+						usermapList.add(usermap);
+						gson = new Gson();
+						resTxt = gson.toJson(mapList);
+						
+						gson = new Gson();
+						userTxt = gson.toJson(usermapList);
+
+						ChatMsgDao.sendMsg(chatUserContext, true, sDate, msgKey, String.valueOf(roomIdx), mType, cType,
+								nextOwner, resTxt, "", "", userTxt, "", date, "");
+
+					}
+
+					if (channel != null) {
+						Param param = new Param();
+						param.put("reqKey", reqKey);
+						param.put("result", "true");
+						param.put("code", "1");
+						param.put("roomIdx", String.valueOf(roomIdx));
+						ChatServerHandler.sendData(channel, ProtocolType.ptChat, ProtocolType.stChatMemberDeleteRes,
+								param);
+					}
+				}
+				stmtCount.close();
+
+			} else {
+				// ����
+				if (channel != null) {
+					Param param = new Param();
+					param.put("reqKey", reqKey);
+					param.put("result", "false");
+					param.put("code", "1");
+					param.put("roomIdx", String.valueOf(roomIdx));
+					ChatServerHandler.sendData(channel, ProtocolType.ptChat, ProtocolType.stChatMemberDeleteRes, param);
+				}
+			}
+			stmtRoom.close();
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+	}
+	
+	////////////////////////////강퇴
+	public static void dropMember(Channel channel,ChatUserContext chatUserContext, String reqKey, long roomIdx, String userID, String memberID
+							  ,String dId) {
+		
+		Connection connection = DBConnectionPool.getConnection();				
+		try {	
+			
+			//방이 있는지 확인
+			String query = "select chat_room_type, owner_id from t_nf_chat_room where chat_room_seq = ?";			
+			PreparedStatement stmtRoom = connection.prepareStatement(query);
+			stmtRoom.setLong(1, roomIdx);			
+			ResultSet rsRoom = stmtRoom.executeQuery();
+			if(rsRoom.next()) {
+				int roomType = rsRoom.getInt(1);
+				String ownerId = rsRoom.getString(2);
+				boolean isOwner = false;
+				if(ownerId.equals(memberID)){
+					isOwner=true;
+				}
+				
+				if(isOwner){
+					
+					
+					//멤버가있는지
+					query = "select user_id from t_nf_chat_member where chat_room_seq = ?";			
+					PreparedStatement Memstmt = connection.prepareStatement(query);
+					Memstmt.setLong(1, roomIdx);			
+					ResultSet rs = Memstmt.executeQuery();
+					ArrayList<HashMap<String, String>> mapList = new ArrayList<HashMap<String, String>>();
+					ArrayList<HashMap<String, String>> usermapList = new ArrayList<HashMap<String, String>>();
+					if(rs.next()){
+						//친구인지
+						query = "select * from t_nf_friend where user_id = ? and friend_id = ? ";
+						PreparedStatement Frstmt = connection.prepareStatement(query);
+						Frstmt.setString(1, memberID);
+						Frstmt.setString(2, dId);
+						ResultSet frRs = Frstmt.executeQuery();
+						boolean status = true;
+						if(frRs.next()){
+							status=false;
+						}
+						Frstmt.close();
+						if(status){//친구가 아니면
+							query = "select user_id,user_name,phone_number,user_type,gender "
+									+ "from t_nf_user "							
+									+ "where user_id = ? ";
+									PreparedStatement Userstmt = connection.prepareStatement(query);				
+									Userstmt.setString(1,dId);
+									ResultSet user = Userstmt.executeQuery();
+									if(user.next()){
+										
+										HashMap<String, String> map = new HashMap<String, String>();
+										HashMap<String, String> usermap = new HashMap<String, String>();
+										
+										String user_id = user.getString("user_id");
+									    String user_name = ChatDBhelper.getSafeString(user.getString("user_name"));
+										String phone_number = ChatDBhelper.getSafeString(user.getString("phone_number")); 
+										String user_type = user.getString("user_type");
+										String gender = ChatDBhelper.getSafeString(Integer.toString(rs.getInt("gender")));
+										
+										map.put("user_id", user_id);
+										map.put("user_name", user_name);
+										map.put("phone_number", phone_number);
+										map.put("user_type", user_type);
+										map.put("gender", gender);
+										usermap.put("gender", gender);
+									
+										
+										mapList.add(map);
+										usermapList.add(usermap);
+									}
+									
+									Userstmt.close(); 
+									Gson gson = new Gson();
+									String resTxt = gson.toJson(mapList);
+									gson = new Gson();
+									String userTxt = gson.toJson(usermapList);
+									
+									String msgKey = MsgKey.getMsgKey();
+									String mType = "0";
+									String cType = "4";
+									Date date = new Date();
+									String sDate = ChatDate.getFormatterServerDate().format(date);
+									
+									
+									ChatMsgDao.sendMsg(chatUserContext, true
+											, sDate, msgKey,String.valueOf(roomIdx), mType, cType, userID
+											, resTxt, "", "1", userTxt, "", date, "");
+									
+									
+									
+							query = "delete from t_nf_chat_member where chat_room_seq = ? and user_id = ? ";
+									
+								PreparedStatement stmt = connection.prepareStatement(query);
+									stmt.setLong(1, roomIdx);
+									stmt.setString(2, dId);
+									stmt.executeUpdate();
+									stmt.close();
+									
+									
+							query = "insert into t_nf_chat_block (cb_user_id, bl_user_id, reg_date) values(?, ?,getdate())";
+									
+							
+									stmt = connection.prepareStatement(query, 1);
+									stmt.setString(1, memberID);
+									stmt.setString(2, dId);
+									stmt.executeUpdate();
+									stmt.close();
+									
+							if (channel != null) {
+								Param param = new Param();
+								param.put("reqKey", reqKey);
+								param.put("result", "true");
+								param.put("code", "1");
+								param.put("roomIdx", String.valueOf(roomIdx));
+								ChatServerHandler.sendData(channel, ProtocolType.ptChat,
+										ProtocolType.stChatMemberDropRes, param);
+							}	
+						}else{//친구인지
+							if(channel != null) {
+								Param param = new Param();
+								param.put("reqKey", reqKey);
+								param.put("result", "false");
+								param.put("code", "3");
+								param.put("roomIdx", String.valueOf(roomIdx));
+								ChatServerHandler.sendData(channel, ProtocolType.ptChat
+										, ProtocolType.stChatMemberDropRes, param);	
+							}
+						}
+					}
+					Memstmt.close();
+				}else{ //방장인지
+					if(channel != null) {
+						Param param = new Param();
+						param.put("reqKey", reqKey);
+						param.put("result", "false");
+						param.put("code", "2");
+						param.put("roomIdx", String.valueOf(roomIdx));
+						ChatServerHandler.sendData(channel, ProtocolType.ptChat
+								, ProtocolType.stChatMemberDropRes, param);	
+					}
+				}
+				
+				
+			} else { //방 정보가 있는지
+				//����
+				if(channel != null) {
+					Param param = new Param();
+					param.put("reqKey", reqKey);
+					param.put("result", "false");
+					param.put("code", "1");
+					param.put("roomIdx", String.valueOf(roomIdx));
+					ChatServerHandler.sendData(channel, ProtocolType.ptChat
+							, ProtocolType.stChatMemberDropRes, param);	
+				}
+			}			
+			stmtRoom.close();
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+	}
+	
+	/////////////////////////////
+	
+	static void updateRecvMsgStatus(Connection connection, long roomIdx, String msgKey, String recvID, int status) {
+		
+		String query = "update t_nf_chat_tran set status = ? where chat_room_seq = ? and chat_msg_key = ? and rcv_id = ?";
+		
+		PreparedStatement stmt = null;
+		try {
+			stmt = connection.prepareStatement(query);
+			stmt.setInt(1, status);
+			stmt.setLong(2, roomIdx);
+			stmt.setString(3, msgKey);
+			stmt.setString(4, recvID);
+			stmt.executeUpdate();
+			
+		} catch (SQLException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} finally {
+			if(stmt != null) {
+				try {
+					stmt.close();
+				} catch (SQLException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+			}
+		}		
+	}
+	
+
+	static void deleteMsgStatus(Connection connection, long roomIdx, String msgKey, String recvID) {		
+		String query = "delete from t_nf_chat_tran where chat_room_seq = ? and chat_msg_key = ? and rcv_id = ?";
+		
+		PreparedStatement stmt = null;
+		try {
+			stmt = connection.prepareStatement(query);
+			stmt.setLong(1, roomIdx);
+			stmt.setString(2, msgKey);
+			stmt.setString(3, recvID);
+			stmt.executeUpdate();
+			stmt.close();
+		} catch (SQLException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} finally {
+			if(stmt != null) {
+				try {
+					stmt.close();
+				} catch (SQLException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+			}
+		}		
+	}
+	
+	public static void onRecvReadMsg(Channel channel
+			, String msgKey, String roomIdx, String sendID, String recvID, int status) {
+	
+		Jedis jedis = RedisClient.getInstance().borrow();
+		try {	
+			
+			
+			if(status == 3) {
+				//
+				{				
+					Param param = new Param();
+					param.put("msgKey", msgKey);
+					param.put("type", "4");			
+					param.put("roomIdx", roomIdx);
+					param.put("msgType", "0");
+					param.put("sendID", sendID);
+					param.put("recvID", recvID);
+					
+					Date date = new Date();
+					String sDate = ChatDate.getFormatterServerDate().format(date);
+					param.put("sDate", sDate);
+					ChatServerHandler.sendData(channel, ProtocolType.ptChat
+							, ProtocolType.stChatStatusRes, param);					
+				}
+				
+				
+				//���� ������Ʈ �� ��� ������� �˸�.
+				String jKey;
+				jKey = "chatR:"  + msgKey;										
+				String ruserid = jedis.hget(jKey, recvID);
+				
+				if("1".equals(ruserid)) {
+					//�����ϰ� ����. ����, ������Ʈ, ��ο��� �˸�. 
+					jedis.hdel(jKey, recvID);
+					
+					Map<String, String> dMap = jedis.hgetAll(jKey);
+					
+					String rcount = String.valueOf(dMap.size());
+					jKey = "chatRCnt:"  + msgKey;
+					jedis.set(jKey, rcount);
+						
+					
+					Param param = new Param();
+					param.put("cmd", "recvR");
+					param.put("msgKey", msgKey);
+					param.put("roomIdx", roomIdx);
+					param.put("chatRCnt", rcount);
+					
+					Gson gson = new Gson();
+					String resMsg = gson.toJson(param);
+					
+					//��� ����Ʈ.
+					jKey = "chatM:"  + msgKey;										
+					Map<String, String> memberMap = jedis.hgetAll(jKey);
+										
+					for (String member : memberMap.keySet()) {
+						
+						jKey = member + ":msg";					
+						jedis.hset(jKey, "rcv_msg_r:" + msgKey, resMsg);	
+						
+						ChatUserContext memberCtx = ChatUserContext.getUserContextMap().get(member);
+						
+						//�������
+						if(memberCtx != null) {							
+							//���缭�����
+							ChatServerHandler.sendRawData(memberCtx.getChannel(), ProtocolType.ptChat
+									, ProtocolType.stReqGetMsg, "{}");								
+						} else {
+						
+						}
+					}	
+					
+					
+					//PC ��� ����Ʈ.
+					jKey = "chatMP:"  + msgKey;										
+					memberMap = jedis.hgetAll(jKey);
+										
+					for (String member : memberMap.keySet()) {
+						
+						jKey = member + ":pmsg";					
+						jedis.hset(jKey, "rcv_msg_r:" + msgKey, resMsg);	
+						
+						ChatUserContext memberCtx = ChatUserContext.getPcUserContextMap().get(member);
+						
+						//�������
+						if(memberCtx != null) {							
+							//���缭�����
+							ChatServerHandler.sendRawData(memberCtx.getChannel(), ProtocolType.ptChat
+									, ProtocolType.stReqGetMsg, "{}");								
+						} else {
+						
+						}
+					}	
+					
+					if(rcount.equals("0")) {
+						//��� ����.
+						jKey = "chatDCnt:"  + msgKey;
+						jedis.del(jKey);
+						
+						jKey = "chatRCnt:"  + msgKey;
+						jedis.del(jKey);
+						
+						jKey = "chatM:"  + msgKey;										
+						Set<String> keys = jedis.hkeys(jKey);
+						
+						for(String field : keys) {
+							jedis.hdel(jKey, field);	
+						}
+						
+						jKey = "chatMP:"  + msgKey;										
+						keys = jedis.hkeys(jKey);						
+						for(String field : keys) {
+							jedis.hdel(jKey, field);	
+						}
+						
+						
+						jKey = "chatD:"  + msgKey;			
+						keys = jedis.hkeys(jKey);
+						for(String field : keys) {
+							jedis.hdel(jKey, field);	
+						}
+						
+						jKey = "chatR:"  + msgKey;
+						keys = jedis.hkeys(jKey);
+						for(String field : keys) {
+							jedis.hdel(jKey, field);	
+						}
+					}
+				}
+				
+				
+			} 
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				RedisClient.getInstance().revert(jedis);
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+	}
+	
+	
+	
+
+	public static void onRecvStatus(Channel channel
+			, String msgKey, String roomIdx, String sendID, String recvID, int status) {
+		
+			
+		Jedis jedis = RedisClient.getInstance().borrow();
+		try {	
+	
+			if(status == 1) {
+				
+				//���亸�� ������� ����
+				{
+					Param param = new Param();
+					param.put("msgKey", msgKey);
+					param.put("type", "2");			
+					param.put("roomIdx", roomIdx);
+					param.put("msgType", "0");	
+					param.put("sendID", sendID);
+					param.put("recvID", recvID);
+					
+					Date date = new Date();
+					String sDate = ChatDate.getFormatterServerDate().format(date);
+					param.put("sDate", sDate);			
+					ChatServerHandler.sendData(channel, ProtocolType.ptChat
+							, ProtocolType.stChatStatusRes, param);											
+				}
+				
+				
+				//���� ������Ʈ �� ��� ������� �˸�.
+				String jKey;
+				jKey = "chatD:"  + msgKey;										
+				String ruserid = jedis.hget(jKey, recvID);
+				
+				if("1".equals(ruserid)) {
+					//�����ϰ� ����. ����, ������Ʈ, ��ο��� �˸�. 
+					jedis.hdel(jKey, recvID);
+					
+					Map<String, String> dMap = jedis.hgetAll(jKey);
+					
+					String dcount = String.valueOf(dMap.size());
+					jKey = "chatDCnt:"  + msgKey;
+					jedis.set(jKey, dcount);
+						
+					
+					Param param = new Param();
+					param.put("cmd", "recvD");
+					param.put("msgKey", msgKey);
+					param.put("roomIdx", roomIdx);
+					param.put("chatDCnt", dcount);
+					
+					Gson gson = new Gson();
+					String resMsg = gson.toJson(param);
+					
+					//��� ����Ʈ.
+					jKey = "chatM:"  + msgKey;										
+					Map<String, String> memberMap = jedis.hgetAll(jKey);
+										
+					for (String member : memberMap.values()) {
+						
+						jKey = member + ":msg";					
+						jedis.hset(jKey, "rcv_msg_d:" + msgKey , resMsg);
+	
+							
+						ChatUserContext memberCtx = ChatUserContext.getUserContextMap().get(member);
+						
+						//�������
+						if(memberCtx != null) {							
+							//���缭�����
+							ChatServerHandler.sendRawData(memberCtx.getChannel(), ProtocolType.ptChat
+									, ProtocolType.stReqGetMsg, "{}");								
+						} else {
+						
+						}
+							
+					}	
+					
+					
+					//��� ����Ʈ.
+					jKey = "chatMP:"  + msgKey;										
+					memberMap = jedis.hgetAll(jKey);
+										
+					for (String member : memberMap.values()) {
+						
+						jKey = member + ":pmsg";					
+						jedis.hset(jKey, "rcv_msg_d:" + msgKey , resMsg);
+	
+							
+						ChatUserContext memberCtx = ChatUserContext.getUserContextMap().get(member);
+						
+						//�������
+						if(memberCtx != null) {							
+							//���缭�����
+							ChatServerHandler.sendRawData(memberCtx.getChannel(), ProtocolType.ptChat
+									, ProtocolType.stReqGetMsg, "{}");								
+						} else {
+						
+						}
+							
+					}
+				}
+				
+			} 
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				
+				RedisClient.getInstance().revert(jedis);
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+	}
+	
+	
+	
+
+	public static void insertBufferMsg(Packet packet ) {
+		/*
+		Connection connection = DBConnectionPool.getConnection();				
+		try {
+			String query = "insert into t_nf_chat_buffer (server_id, dest_id, from_server_id, buffer_key, contents, pt, st, reg_date) values(?, ?, ?, ?, ?, ?, ?, getDate())";
+			
+			PreparedStatement stmt = connection.prepareStatement(query);
+			
+			stmt.setString(1, packet.getServerID());
+			stmt.setString(2, packet.getDestID());
+			stmt.setString(3, Config.getInstance().getServerId());
+			stmt.setLong(4, packet.getBufferKey());
+		
+			//Gson gson = new Gson();
+			//String resMsg = gson.toJson(packet.getParam());	
+			stmt.setString(5, packet.getParam());//resMsg);
+			stmt.setInt(6, packet.getSt());
+			stmt.setInt(7, packet.getPt());
+			
+			stmt.executeUpdate();
+					
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		*/
+	}
+	
+
+	public static ArrayList<Packet> getBufferMsg() {
+		/*
+		ArrayList<Packet> result = null;
+		
+		Connection connection = DBConnectionPool.getConnection();				
+		try {				
+			String query = "select * from t_nf_chat_buffer where server_id = ? limit 1000 ";			
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setString(1, Config.getInstance().getServerId());
+			
+			ResultSet rs = stmt.executeQuery();
+			long lastSeq = -1;
+			
+			while(rs.next()) {
+				lastSeq = rs.getLong("chat_buffer_seq");
+				
+				int pt = rs.getInt("pt");
+				int st = rs.getInt("st");
+				String contents = rs.getString("contents");
+				long buffer_key = rs.getLong("buffer_key");
+				String from_server_id = rs.getString("from_server_id");
+				String dest_id = rs.getString("dest_id");
+				String server_id = rs.getString("server_id");
+				
+				if(result == null) {
+					result = new ArrayList<Packet>();
+				}
+				Packet packet = new Packet();
+				
+				packet.setPt(pt);
+				packet.setSt(st);
+				packet.setParam(contents);
+				packet.setBufferKey(buffer_key);
+				packet.setDestID(dest_id);
+				
+				result.add(packet);
+			}
+			stmt.close();
+			
+			//������ ����				
+			if(lastSeq > -1) {
+				query = "DELETE from t_nf_chat_buffer where chat_buffer_seq <= ? ";				
+				stmt = connection.prepareStatement(query);
+				stmt.setLong(1, lastSeq);
+				
+				stmt.executeUpdate();
+				stmt.close();
+			}
+		
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		return result;
+		*/
+		return null;
+		
+	}	
+	
+	
+	
+	/*
+	public static void onRecvReplyGoStead(Channel channel, ChatUserContext context
+			, String roomIdx, String Status ) {
+	
+		
+        String gsUser = "";
+        String reqId = "";
+        String status = "";
+        
+		String myID = context.getId();
+		Connection connection = DBConnectionPool.getConnection();				
+		try {	
+			//ê �� ã��..
+						
+			String query = 
+					"select A.chat_room_seq, B.status, B.req_user, B.rcv_user, B.req_user from t_nf_chat_room A left join t_nf_chat_notice B on A.chat_room_seq = B.chat_room_seq and B.msg_type = 0 where A.chat_room_seq = " + roomIdx;
+		
+			Statement statement = connection.createStatement();
+			ResultSet rsRoom = statement.executeQuery(query);
+			
+			if(rsRoom.next()) {
+				status = rsRoom.getString("status");
+		        gsUser = rsRoom.getString("rcv_user");
+		        reqId = rsRoom.getString("req_user");
+			}
+			statement.close();
+			
+			
+			if(gsUser.equals(myID) || status.equals("1")) {				
+				
+				GoSteadyDao.updateGoSteady(Long.valueOf(roomIdx)
+						, Integer.valueOf(Status), "");
+				
+				
+					//String firstName = GoSteadyDao.getUserName(recvID);
+					String pushMessage = context.getName() + " accept go steady with you.";
+					
+					//�˸� ���.
+					PushKey pushKey = UserDao.getPush(reqId);
+					if(pushKey != null) {
+						
+						Push push = new Push();
+						push.setBadge(1);
+						push.setOs(pushKey.getOs());
+						push.setPushKey(pushKey.getPushKey());
+						push.setMsgType(PushType.PT_GO_RES);
+						push.setUserid(reqId);
+						push.setStatus(0);
+						push.setServiceId(PushType.SERVICE_ID);
+						push.setPushType(pushKey.getPushType());							
+						push.setMsg(pushMessage);
+						push.setMsgKey(roomIdx);
+						push.setSender(myID);
+												
+						PushDao.addPush(push);
+					}	
+					///////////////////////////////////
+					Param param = new Param();
+					
+					param.put("result", "true");
+					param.put("resultCode", "0");
+					param.put("roomIdx", roomIdx);
+					
+					ChatServerHandler.sendData(channel, ProtocolType.ptChat
+							, ProtocolType.stChatReqReplyGoSteady, param);
+					
+					
+					//�������
+					ChatUserContext member = ChatUserContext.getUserContextMap().get(reqId);
+					
+					if(member != null) {							
+						
+						Param paramN = new Param();
+						paramN.put("roomIdx", roomIdx);
+						paramN.put("msgType", "reply");
+						
+						ChatServerHandler.sendData(member.getChannel(), ProtocolType.ptChat
+								, ProtocolType.stChatNoticeGoSteady, paramN);
+					}
+					
+			} else {		
+				Param param = new Param();
+				
+				param.put("result", "false");
+				param.put("resultCode", "503");
+				param.put("roomIdx", roomIdx);
+				
+				ChatServerHandler.sendData(channel, ProtocolType.ptChat
+						, ProtocolType.stChatReqReplyGoSteady, param);
+			}
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+	}
+	
+	
+	public static void onRecvBreakGoSteady(Channel channel, ChatUserContext context
+			, String rcvID ) {
+	
+	
+        boolean isMember = false;
+		String roomIdx = "";
+		String sendID = context.getId();
+		Connection connection = DBConnectionPool.getConnection();				
+		try {	
+			String query = "select 2 as CNT_ROOM, A.chat_room_seq from t_nf_chat_room A inner join t_nf_chat_member B on A.chat_room_seq = B.chat_room_seq"
+					+ " where chat_room_type = 0 and ((B.user_id =  '" + sendID +"' and A.owner_id = '" + rcvID  + "') or (B.user_id = '" + rcvID  + "' and A.owner_id = '" + sendID + "'))"
+					+ " order by A.reg_date desc limit 1 ";
+
+			Statement stmt = connection.createStatement();
+			ResultSet rs = stmt.executeQuery(query);
+			
+			if(rs.next()) {
+				int CNT_ROOM = rs.getInt(1);
+				if(CNT_ROOM == 2) {
+					long eIdx = rs.getLong(2);	
+					roomIdx = String.valueOf(eIdx);
+					isMember = true;
+				}
+			}
+			stmt.close(); 
+			
+			
+			
+			if(isMember) {				
+				GoSteadyDao.deleteGoSteady(Long.valueOf(roomIdx));				
+				
+				
+				Param param = new Param();
+				
+				param.put("result", "true");
+				param.put("resultCode", "0");
+				param.put("roomIdx", roomIdx);
+				
+				ChatServerHandler.sendData(channel, ProtocolType.ptChat
+						, ProtocolType.stChatResBreakGoSteady, param);
+				
+				//��Ŷ ���.
+				String pushMessage = context.getName() + " break go steady with you.";
+				
+				//�˸� ���.
+				PushKey pushKey = UserDao.getPush(rcvID);
+				if(pushKey != null) {
+					
+					Push push = new Push();
+					push.setBadge(1);
+					push.setOs(pushKey.getOs());
+					push.setPushKey(pushKey.getPushKey());
+					push.setMsgType(PushType.PT_BREAK_GO_REQ);
+					push.setUserid(rcvID);
+					push.setStatus(0);
+					push.setServiceId(PushType.SERVICE_ID);
+					push.setPushType(pushKey.getPushType());							
+					push.setMsg(pushMessage);
+					push.setMsgKey(roomIdx);
+					push.setSender(sendID);
+											
+					PushDao.addPush(push);
+				}	
+				
+				ChatUserContext member = ChatUserContext.getUserContextMap().get(rcvID);
+				
+				//�������
+				if(member != null) {							
+					
+					Param paramN = new Param();
+					paramN.put("roomIdx", roomIdx);
+					paramN.put("msgType", "break");
+					
+					ChatServerHandler.sendData(member.getChannel(), ProtocolType.ptChat
+							, ProtocolType.stChatNoticeGoSteady, paramN);
+				}
+			} else {
+				Param param = new Param();
+				param.put("result", "false");
+				param.put("resultCode", "504");
+				param.put("roomIdx", roomIdx);
+				
+				ChatServerHandler.sendData(channel, ProtocolType.ptChat
+						, ProtocolType.stChatResBreakGoSteady, param);
+				
+			}
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+	}
+	*/
+	
+	public static void onReqDeleteMsg(Channel channel, ChatUserContext context
+			, String msgkey, String msgtype ) {
+	
+		String myID = context.getId();
+		
+		Jedis jedis = RedisClient.getInstance().borrow();				
+		try {	
+			
+			String jKey = myID + ":msg";
+			if(context.getMode().equals("2")) {
+				jKey = myID + ":pmsg";
+			}
+								
+			if(msgtype.equals("recvmsg")) {
+				jedis.hdel(jKey, "rcv_msg:" + msgkey);	
+			} else if(msgtype.equals("recvD")) {
+				jedis.hdel(jKey, "rcv_msg_d:" + msgkey);	
+			} else if(msgtype.equals("recvR")) {
+				jedis.hdel(jKey, "rcv_msg_r:" + msgkey);	
+			}			
+
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				RedisClient.getInstance().revert(jedis);
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+	}
+	
+	
+
+	public static String getRoomIdx(String msgKey) {
+		String result = "";
+		Connection connection = DBConnectionPool.getConnection();				
+		try {			
+			String query = "SELECT chat_room_seq FROM t_nf_chat_msg where chat_msg_key = ?";
+			
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setString(1, msgKey);
+			
+			ResultSet rs = stmt.executeQuery();
+			
+			if(rs.next()) {
+				result =  rs.getString("chat_room_seq");
+			}
+			stmt.close(); 
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		
+		return result;
+	}
+	
+
+	
+
+	public static String getRoomIdxByGroupID(String groupID) {
+		String result = "";
+		Connection connection = DBConnectionPool.getConnection();				
+		try {			
+			String query = "SELECT chat_room_seq FROM t_nf_chat_room where group_seq = ?";
+			
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setString(1, groupID);
+			
+			ResultSet rs = stmt.executeQuery();
+			
+			if(rs.next()) {
+				result =  rs.getString("chat_room_seq");
+			}
+			stmt.close(); 
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		
+		return result;
+	}
+	
+
+	public static String getRoomIdxByTarget(String target) {
+		String result = "";
+		Connection connection = DBConnectionPool.getConnection();				
+		try {			
+			String query = "SELECT chat_room_seq FROM t_nf_chat_room where target = ?";
+			
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setString(1, target);
+			
+			ResultSet rs = stmt.executeQuery();
+			
+			if(rs.next()) {
+				result =  rs.getString("chat_room_seq");
+			}
+			stmt.close(); 
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		
+		return result;
+	}
+
+	public static LinkedList<ChatRoom> getDefaultRoomList() {
+		LinkedList<ChatRoom> result = new LinkedList<ChatRoom>();
+		
+		Connection connection = DBConnectionPool.getConnection();
+		try {
+			String query = "" + 
+					"SELECT * " +
+					"FROM t_nf_chat_room " +
+					"WHERE group_type = 2 or group_type = 1 or group_type = 0 ";
+			Statement statement = connection.createStatement();
+			ResultSet rs = statement.executeQuery(query);	
+						
+			while(rs.next()) {
+				ChatRoom chatroom = new ChatRoom();
+				chatroom.setChatRoomSeq(rs.getLong("chat_room_seq"));
+				chatroom.setChatRoomType(rs.getInt("chat_room_type"));
+				chatroom.setOwnerId(rs.getString("owner_id"));
+				chatroom.setRegDate(rs.getString("reg_date"));
+				chatroom.setLastMsgSeq(rs.getString("last_msg_seq"));
+				chatroom.setTitle(rs.getString("title"));
+				
+				chatroom.setGroup_type(rs.getInt("group_type"));			
+				chatroom.setGroup_seq(rs.getInt("group_seq"));	
+				
+				result.add(chatroom);
+					
+			}
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}	
+		
+		return result;
+	}	
+	
+
+	public static LinkedList<ChatRoom> getShareRoomList() {
+		LinkedList<ChatRoom> result = new LinkedList<ChatRoom>();
+		
+		Connection connection = DBConnectionPool.getConnection();
+		try {
+			String query = "" + 
+					"SELECT * " +
+					"FROM t_nf_chat_room " +
+					"WHERE group_type = 2 ";
+			Statement statement = connection.createStatement();
+			ResultSet rs = statement.executeQuery(query);	
+						
+			while(rs.next()) {
+				ChatRoom chatroom = new ChatRoom();
+				chatroom.setChatRoomSeq(rs.getLong("chat_room_seq"));
+				chatroom.setChatRoomType(rs.getInt("chat_room_type"));
+				chatroom.setOwnerId(rs.getString("owner_id"));
+				chatroom.setRegDate(rs.getString("reg_date"));
+				chatroom.setLastMsgSeq(rs.getString("last_msg_seq"));
+				chatroom.setTitle(rs.getString("title"));
+				
+				chatroom.setGroup_type(rs.getInt("group_type"));			
+				chatroom.setGroup_seq(rs.getInt("group_seq"));	
+				
+				result.add(chatroom);
+					
+			}
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}	
+		
+		return result;
+	}
+	
+
+	public static LinkedList<ChatRoom> getReportRoomList() {
+		LinkedList<ChatRoom> result = new LinkedList<ChatRoom>();
+		
+		Connection connection = DBConnectionPool.getConnection();
+		try {
+			String query = "" + 
+					"SELECT * " +
+					"FROM t_nf_chat_room " +
+					"WHERE group_type = 0 ";
+			Statement statement = connection.createStatement();
+			ResultSet rs = statement.executeQuery(query);	
+						
+			while(rs.next()) {
+				ChatRoom chatroom = new ChatRoom();
+				chatroom.setChatRoomSeq(rs.getLong("chat_room_seq"));
+				chatroom.setChatRoomType(rs.getInt("chat_room_type"));
+				chatroom.setOwnerId(rs.getString("owner_id"));
+				chatroom.setRegDate(rs.getString("reg_date"));
+				chatroom.setLastMsgSeq(rs.getString("last_msg_seq"));
+				chatroom.setTitle(rs.getString("title"));
+				
+				chatroom.setGroup_type(rs.getInt("group_type"));			
+				chatroom.setGroup_seq(rs.getInt("group_seq"));	
+				
+				result.add(chatroom);
+					
+			}
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}	
+		
+		return result;
+	}
+}

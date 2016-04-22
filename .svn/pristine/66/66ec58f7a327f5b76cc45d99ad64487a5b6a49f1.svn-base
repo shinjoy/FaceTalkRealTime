@@ -1,0 +1,305 @@
+package com.nomadsoft.chat.openServer.event;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Hashtable;
+
+import io.netty.channel.Channel;
+
+import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
+import com.nomadsoft.chat.db.dao.ChatDBhelper;
+import com.nomadsoft.chat.db.dao.ChatDao;
+import com.nomadsoft.chat.db.dao.ChatMsgDao;
+import com.nomadsoft.chat.db.dao.DBConnectionPool;
+import com.nomadsoft.chat.db.dto.Param;
+import com.nomadsoft.chat.log.Log;
+import com.nomadsoft.chat.openServer.ChatServerHandler;
+import com.nomadsoft.chat.openServer.ChatUserContext;
+import com.nomadsoft.chat.openServer.ProtocolType;
+import com.nomadsoft.chat.utility.ChatDate;
+
+public class EventChat {
+
+	public static void sendMsg(Channel channel, byte[] data, JsonElement jo, ChatUserContext context) {
+		try {
+			if(jo == null) {
+				jo = ChatServerHandler.formatJsonData(data);
+			}
+			
+			JsonObject jObject = jo.getAsJsonObject();						
+			String msgKey = jObject.getAsJsonPrimitive("msgKey").getAsString();
+			String roomIdx = jObject.getAsJsonPrimitive("roomIdx").getAsString();					
+			String msgType = jObject.getAsJsonPrimitive("mType").getAsString();
+			String contentsType = jObject.getAsJsonPrimitive("cType").getAsString();
+						
+			String sendID = jObject.getAsJsonPrimitive("sendID").getAsString();
+			String contents = jObject.getAsJsonPrimitive("contents").getAsString();
+			String fileName = jObject.getAsJsonPrimitive("fileName").getAsString();
+			String option1 = jObject.getAsJsonPrimitive("option1").getAsString();
+			
+			Connection connection = DBConnectionPool.getConnection();
+			String query = "select gender  " 
+					+ "from t_nf_user " 
+					+ "where user_id = ? ";
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setString(1, sendID);
+			
+			HashMap<String, String> usermap = new HashMap<String, String>();
+			ResultSet rs = stmt.executeQuery();
+			JsonObject jj = new JsonObject();
+			while (rs.next()) {
+				
+				String gender = ChatDBhelper.getSafeString(Integer.toString(rs.getInt("gender")));
+				/*String photo = ChatDBhelper.getSafeString(rs.getString("photo"));
+				String photoStatus = "0";
+				if(!photo.equals("")){//사진이있으면
+					photoStatus="1";
+				}*/
+				jj.addProperty("gender", gender);
+				//jj.addProperty("photoStatus", photoStatus);
+				
+			}
+			
+			String option2 =jj.toString();
+			
+			String option3 = jObject.getAsJsonPrimitive("option3").getAsString();
+			
+	
+			//��� ����.
+			Param param = new Param();
+			param.put("msgKey", msgKey);
+			param.put("type", "1");			
+			param.put("roomIdx", roomIdx);
+			param.put("msgType", msgType);	
+			
+			Date date = new Date();
+			String sDate = ChatDate.getFormatterServerDate().format(date);
+			param.put("sDate", sDate);			
+			ChatServerHandler.sendData(channel, ProtocolType.ptChat
+					, ProtocolType.stChatStatusRes, param);		
+						
+			
+			//�޽��� ���			
+			ChatMsgDao.sendMsg(context, true, sDate, msgKey, roomIdx, msgType
+					, contentsType, sendID, contents, fileName, option1
+					, option2, option3, date, "");
+			
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		}
+	}
+	
+	public static void loadSaveMsg(Channel channel, byte[] data, JsonElement jo, ChatUserContext context) {
+		try {
+			//�޽��� ���			
+			ChatMsgDao.loadSaveMsg(context);
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		}
+	}
+	
+	
+	public static void loadSaveStatus(Channel channel, byte[] data, JsonElement jo, ChatUserContext context) {
+		try {
+			//�޽��� ���			
+			ChatMsgDao.loadSaveStatus(context);
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		}
+	}
+	
+	public static void onReceiveCreateRoom(Channel channel, byte[] data, JsonElement jo, ChatUserContext context) {
+		try {
+			
+			if(jo == null) {
+				jo = ChatServerHandler.formatJsonData(data);
+			}
+			/*
+			 * �� Ÿ�� ����.
+			 * 
+			 * 0 : 1:1 ��ȭ
+			 * 1 : �׷� �Ϲ� ��ȭ
+			 * 2 : ��� ��ȭ
+			 */
+			
+			JsonObject jObject = jo.getAsJsonObject();
+			
+			String reqKey = jObject.getAsJsonPrimitive("reqKey").getAsString();
+			String memberList = jObject.getAsJsonPrimitive("memberList").getAsString();			
+			int roomType = jObject.getAsJsonPrimitive("roomType").getAsInt();			
+			String userId = context.getId();
+			
+			ChatDao.createChatRoom(channel, roomType,  reqKey, memberList, userId);
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		}
+	}
+	
+	
+	public static void onReceiveRoomInfo(Channel channel, byte[] data, JsonElement jo, ChatUserContext context) {
+		try {
+			if(jo == null) {
+				jo = ChatServerHandler.formatJsonData(data);
+			}
+			
+			JsonObject jObject = jo.getAsJsonObject();
+			
+			String reqKey = jObject.getAsJsonPrimitive("reqKey").getAsString();
+			String roomIdx = jObject.getAsJsonPrimitive("roomIdx").getAsString();	
+			String userId = context.getId();
+			
+			ChatDao.getRoomInfo(channel, reqKey, Long.valueOf(roomIdx), userId);
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		}
+	}
+	
+
+	public static void onInviteMember(Channel channel, byte[] data, JsonElement jo, ChatUserContext context) {
+		try {
+			
+			if(jo == null) {
+				jo = ChatServerHandler.formatJsonData(data);
+			}
+			
+			JsonObject jObject = jo.getAsJsonObject();
+			
+			String reqKey = jObject.getAsJsonPrimitive("reqKey").getAsString();
+			String roomIdx = jObject.getAsJsonPrimitive("roomIdx").getAsString();	
+			String inviteUser = jObject.getAsJsonPrimitive("inviteUser").getAsString();			
+
+			ChatDao.inviteMember(channel, context, context.getId(), reqKey, Long.valueOf(roomIdx), inviteUser);
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		}
+	}
+	
+
+	public static void onRemoveMember(Channel channel, byte[] data, JsonElement jo, ChatUserContext context) {
+		try {
+			if(jo == null) {
+				jo = ChatServerHandler.formatJsonData(data);
+			}
+			
+			JsonObject jObject = jo.getAsJsonObject();
+			
+			String reqKey = jObject.getAsJsonPrimitive("reqKey").getAsString();
+			String roomIdx = jObject.getAsJsonPrimitive("roomIdx").getAsString();	
+			
+			ChatDao.removeMember(channel, context, reqKey, Long.valueOf(roomIdx), context.getId(), context.getId());
+						
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		}
+	}
+	
+	
+
+	public static void onDropMember(Channel channel, byte[] data, JsonElement jo, ChatUserContext context) {
+		try {
+			if(jo == null) {
+				jo = ChatServerHandler.formatJsonData(data);
+			}
+			
+			JsonObject jObject = jo.getAsJsonObject();
+			
+			String reqKey = jObject.getAsJsonPrimitive("reqKey").getAsString();
+			String roomIdx = jObject.getAsJsonPrimitive("roomIdx").getAsString();				
+			String destUserid = jObject.getAsJsonPrimitive("destUserid").getAsString();
+			
+			
+			ChatDao.dropMember(channel, context, reqKey,  Long.valueOf(roomIdx), context.getId(),context.getId(), destUserid);
+									
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		}
+	}
+	
+	public static void onReadMsg(Channel channel, byte[] data, JsonElement jo, ChatUserContext context) {
+		try {
+			if(jo == null) {
+				jo = ChatServerHandler.formatJsonData(data);
+			}
+			JsonObject jObject = jo.getAsJsonObject();
+			
+			String msgKey = jObject.getAsJsonPrimitive("msgKey").getAsString();
+			String roomIdx = jObject.getAsJsonPrimitive("roomIdx").getAsString();	
+			String sendID = jObject.getAsJsonPrimitive("sendID").getAsString();
+			String recvID = jObject.getAsJsonPrimitive("recvID").getAsString();
+			int status = jObject.getAsJsonPrimitive("status").getAsInt();
+			
+			ChatDao.onRecvReadMsg(channel, msgKey, roomIdx, sendID, recvID, status);
+
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		}
+	}
+	
+	
+
+	public static void onRecvStatus(Channel channel, byte[] data, JsonElement jo, ChatUserContext context) {
+		try {
+			if(jo == null) {
+				jo = ChatServerHandler.formatJsonData(data);
+			}
+			
+			JsonObject jObject = jo.getAsJsonObject();
+			
+			String msgKey = jObject.getAsJsonPrimitive("msgKey").getAsString();
+			String roomIdx = jObject.getAsJsonPrimitive("roomIdx").getAsString();	
+			String sendID = jObject.getAsJsonPrimitive("sendID").getAsString();
+			String recvID = jObject.getAsJsonPrimitive("recvID").getAsString();
+			int status = jObject.getAsJsonPrimitive("status").getAsInt();
+			
+			ChatDao.onRecvStatus(channel, msgKey, roomIdx, sendID, recvID, status);
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		}
+	}
+	
+	
+	public static void onReqDeleteMsg(Channel channel, byte[] data, JsonElement jo, ChatUserContext context) {
+		try {
+			if(jo == null) {
+				jo = ChatServerHandler.formatJsonData(data);
+			}
+			JsonObject jObject = jo.getAsJsonObject();
+					
+			String msgkey = jObject.getAsJsonPrimitive("msgkey").getAsString();			
+			String msgtype = jObject.getAsJsonPrimitive("msgtype").getAsString();
+			
+			
+			ChatDao.onReqDeleteMsg(channel, context, msgkey, msgtype);
+			
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		}
+	}
+	
+}

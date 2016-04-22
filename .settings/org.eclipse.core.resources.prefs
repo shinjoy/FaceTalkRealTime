@@ -1,0 +1,7 @@
+eclipse.preferences.version=1
+encoding//src/com/nomadsoft/chat/db/dao/ChatDao.java=UTF-8
+encoding//src/com/nomadsoft/chat/db/dao/ChatMsgDao.java=UTF-8
+encoding//src/com/nomadsoft/chat/db/dao/UserDao.java=UTF-8
+encoding//src/com/nomadsoft/chat/db/dto/User.java=UTF-8
+encoding//src/com/nomadsoft/chat/openServer/ProtocolType.java=UTF-8
+encoding//src/com/nomadsoft/chat/openServer/event/EventChat.java=UTF-8

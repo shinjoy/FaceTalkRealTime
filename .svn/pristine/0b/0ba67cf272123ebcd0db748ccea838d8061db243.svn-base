@@ -1,0 +1,62 @@
+package com.nomadsoft.chat.noticeService;
+
+import com.nomadsoft.chat.config.Config;
+import com.nomadsoft.chat.db.dao.PushMsgDao;
+import com.nomadsoft.chat.log.Log;
+
+public class NoticeSendThread extends Thread{
+	static boolean isRunning = true;
+	static NoticeSendThread instance = null;
+	public static NoticeSendThread getNoticeSendThread() {
+		return instance;
+	}
+	
+	public static boolean isRunning() {
+		return isRunning;
+	}
+
+
+	@Override
+	public void run() {
+		try {			
+			isRunning = true;
+			checkNoticePush();
+		} catch (Exception e) {
+			//e.printStackTrace();
+		}
+	}
+	
+	void checkNoticePush() {
+		try {
+			Thread.sleep(10000);
+			
+			while(true) {
+				
+				Thread.sleep(50);
+				try {
+					PushMsgDao.checkNotice();					
+				} catch (Exception e) {
+					// TODO: handle exception
+					Log.w(e.getMessage());
+				}
+			}
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.w(e.getMessage());
+		} finally {
+			isRunning = false;			
+		}
+	}
+	
+	
+	
+	public static void startThread() {
+		if(instance != null) {
+			instance.interrupt();
+			instance = null;
+		}
+		
+		instance = new NoticeSendThread();
+		instance.start();				
+	}	
+}

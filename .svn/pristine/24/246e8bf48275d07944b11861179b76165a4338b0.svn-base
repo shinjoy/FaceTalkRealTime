@@ -1,0 +1,454 @@
+package com.nomadsoft.chat.db.dao;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.LinkedList;
+import java.util.List;
+
+import com.nomadsoft.chat.config.Config;
+import com.nomadsoft.chat.db.dto.VirtualMember;
+import com.nomadsoft.chat.log.Log;
+import com.nomadsoft.chat.openServer.ChatUserContext;
+import com.nomadsoft.util.push.PushKey;
+
+public class UserDao {	
+
+	public static int loginCheck(String userId, String authCode, String deviceId,  ChatUserContext context, String mode) {
+		
+		int result = 0;
+
+		Connection connection = DBConnectionPool.getConnection();		
+		try {
+			//이름, 
+			String query = "SELECT user_type, user_name, phone_number, device_id  FROM t_nf_user WHERE user_id = ? and password = ?";
+		
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setString(1, userId);
+			stmt.setString(2, authCode);
+			
+			ResultSet rs = stmt.executeQuery();
+						
+			if(rs.next()) {				
+				int userType = rs.getInt(1);				
+				String userName = rs.getString(2);
+				String userPhone = "";
+				String device_id = rs.getString(4);
+											
+			
+				if(device_id == null || device_id.equals("") || deviceId.equals(device_id)) {
+					context.setId(userId);
+					context.setAuthCode(authCode);
+					context.setName(userName);
+					context.setPhone(userPhone);
+					context.setType(userType);
+					context.setMode(mode);
+					context.setDeviceId(deviceId);
+					
+					result = 1;	
+				} else {
+					result = 2;	
+				}
+			} else {
+				result = 3;
+			}
+			
+			stmt.close(); 
+			
+			
+			if(result == 1) {				
+				String serverId = Config.getInstance().getServerId();
+				//업데이트
+				String updateQuery = "update t_nf_user set server_id = ?, last_logindate=getDate(), login_status=1 WHERE user_id = ?";
+				
+				PreparedStatement updateStmt = connection.prepareStatement(updateQuery);
+				updateStmt.setString(1, serverId);
+				updateStmt.setString(2, userId);
+				updateStmt.executeUpdate();								
+			}
+			
+			
+		} catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		
+		return result;
+	}
+	
+	
+
+	public static int windowsLoginCheck(String userId, String authCode, String deviceId,  ChatUserContext context, String mode) {
+		
+		int result = 0;
+
+		Connection connection = DBConnectionPool.getConnection();		
+		try {
+			//이름, 
+			String query = "SELECT user_type, user_name, phone_number, device_id_windows  FROM t_nf_user WHERE user_id = ? and password = ?";
+		
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setString(1, userId);
+			stmt.setString(2, authCode);
+			
+			ResultSet rs = stmt.executeQuery();
+						
+			if(rs.next()) {				
+				int userType = rs.getInt(1);				
+				String userName = rs.getString(2);
+				String userPhone = "";
+				String device_id = rs.getString(4);
+											
+			
+				if(device_id == null || device_id.equals("") || deviceId.equals(device_id)) {
+					context.setId(userId);
+					context.setAuthCode(authCode);
+					context.setName(userName);
+					context.setPhone(userPhone);
+					context.setType(userType);
+					context.setMode(mode);
+					context.setDeviceId(deviceId);
+					
+					result = 1;	
+					
+					
+					//가상회원 로드.
+					List<ChatUserContext> cList = new ArrayList<ChatUserContext>();
+					List<VirtualMember> vmList = getVirtualMemberList(userId);
+					for(VirtualMember vm : vmList) {
+						ChatUserContext vContext = new ChatUserContext(context.getChannel());
+						
+						vContext.setId(vm.getUserId());
+						vContext.setAuthCode("");
+						vContext.setName(vm.getUserName());
+						vContext.setPhone("");
+						vContext.setType(vm.getUserType());
+						vContext.setMode("2");
+						vContext.setDeviceId(deviceId);
+						cList.add(vContext);		
+												
+						ChatUserContext.getPcUserContextMap().put(vm.getUserId(), context);						   				        							
+					}					
+					context.setVmList(cList);					
+				} else {
+					result = 2;	
+				}
+			} else {
+				result = 3;
+			}
+			
+			stmt.close(); 
+			
+			
+			if(result == 1) {				
+				String serverId = Config.getInstance().getServerId();
+				//업데이트
+				String updateQuery = "update t_nf_user set server_id_windows = ?, last_logindate=getDate(), login_status_windows=1 WHERE user_id = ? or agent_id = ? ";
+				
+				PreparedStatement updateStmt = connection.prepareStatement(updateQuery);
+				updateStmt.setString(1, serverId);
+				updateStmt.setString(2, userId);
+				updateStmt.setString(3, userId);
+				updateStmt.executeUpdate();								
+			}
+			
+			
+		} catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		
+		return result;
+	}
+	
+
+	public static boolean updateStatus(String userId, int status) {
+		
+		boolean result = false;
+		
+		Connection connection = DBConnectionPool.getConnection();		
+		try {
+ 
+			String query = "update t_nf_user set login_status=? WHERE user_id = ?";
+
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setInt(1, status);
+			stmt.setString(2, userId);
+			stmt.executeUpdate();
+			stmt.close(); 
+		} catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		
+		return result;
+	}
+	
+
+	public static boolean updateStatusWindows(String userId, int status) {
+		boolean result = false;
+		Connection connection = DBConnectionPool.getConnection();		
+		try {
+			String query = "update t_nf_user set login_status_windows=? WHERE user_id = ?";
+
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setInt(1, status);
+			stmt.setString(2, userId);
+			stmt.executeUpdate();
+			stmt.close(); 
+		} catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		
+		return result;
+	}
+	
+	public static boolean loginCheckDevice(String userId, String authCode, String deviceId) {
+		
+		boolean result = false;
+		
+		Connection connection = DBConnectionPool.getConnection();		
+		try {
+			//이름, 
+			String query = "SELECT device_id  FROM t_nf_user WHERE user_id = ? and device_id = ?";
+
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setString(1, userId);
+			stmt.setString(2, deviceId);
+			
+			
+			ResultSet rs = stmt.executeQuery();
+						
+			if(rs.next()) {				
+				result = true;
+			}
+			
+			stmt.close(); 
+		} catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		
+		return result;
+	}
+
+	
+	public static boolean windowsLoginCheckDevice(String userId, String authCode, String deviceId) {
+		
+		boolean result = false;
+		
+		Connection connection = DBConnectionPool.getConnection();		
+		try {
+			//이름, 
+			String query = "SELECT device_id_windows  FROM t_nf_user WHERE user_id = ? and device_id_windows = ?";
+
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setString(1, userId);
+			stmt.setString(2, deviceId);
+			
+			
+			ResultSet rs = stmt.executeQuery();
+						
+			if(rs.next()) {				
+				result = true;
+			}
+			
+			stmt.close(); 
+		} catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		
+		return result;
+	}
+	
+	public static boolean disconnect(String userId, String authCode, String deviceId, ChatUserContext context) {
+		
+		boolean result = false;
+		if(userId.equals("") == false) {
+			Connection connection = DBConnectionPool.getConnection();		
+			try {				 				
+				//업데이트
+				String updateQuery = "update t_nf_user set login_status=0 WHERE user_id = ? DeviceId = ?";
+				
+				PreparedStatement updateStmt = connection.prepareStatement(updateQuery);
+				updateStmt.setString(1, userId);				
+				updateStmt.setString(2, deviceId);
+				updateStmt.executeUpdate();		
+			} catch (Exception e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			} finally {
+				try {
+					connection.close();
+				} catch (Exception e2) {
+					// TODO: handle exception
+				}
+			}
+		}
+		
+		return result;
+	}
+	
+	
+	
+
+
+	public static int getUserBadgeCnt(String userId) {
+		int result = 1;
+		/*
+		Connection connection = DBConnectionPool.getConnection();				
+		try {			
+			String query = "select SUM(cnt) as cnt from "
+				+ " ( select COUNT(*) as cnt from t_nf_msg_user where user_id = ? and status < 5 and reg_date < getDate() "
+				+ " union all "
+				+ " select COUNT(*) as cnt from t_nf_chat_tran A inner join  t_nf_chat_msg B on A.chat_msg_key = B.chat_msg_key "
+				+ " where A.rcv_id = ? and A.status < 3 and B.c_type <> 3 and B.c_type <> 4 ) T";
+							
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setString(1, userId);
+			stmt.setString(2, userId);
+			ResultSet rs = stmt.executeQuery();			
+			
+			if(rs.next()) {
+				result = rs.getInt("cnt");
+							
+			}
+			stmt.close();
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		*/
+		return result;
+	}	
+	
+	
+
+	/**
+	 * 푸시정보
+	 * @return
+	 */
+	public static PushKey getPush(String userId) {
+		
+		PushKey result = null;
+		Connection connection = DBConnectionPool.getConnection();				
+		try {			
+			String query = ""
+					+ "SELECT user_id, pushkey, os_type, pushtype  "
+					+ "FROM t_nf_user "
+					+ "WHERE NOT(pushkey is null OR pushkey = '') AND NOT(os_type is null OR os_type = '') AND user_id = ? ";			
+			
+		
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setString(1, userId);
+			
+			ResultSet rs = stmt.executeQuery();			
+			
+			if(rs.next()) {
+				result = new PushKey();
+				result.setUserId(userId);
+				result.setPushKey(rs.getString(2));
+				result.setOs(rs.getString(3));
+				result.setPushType(3);
+				
+			}
+			stmt.close();
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}	
+		
+		return result;
+	}
+	
+
+
+	public static List<VirtualMember> getVirtualMemberList(String userId) {		
+		List<VirtualMember> result =  new LinkedList<VirtualMember>();
+				
+		String query = 
+				  "select user_id, user_type, user_name, comment from T_NF_USER where agent_id = '" + userId + "' ";		  							
+
+		Connection connection = DBConnectionPool.getConnection();				
+		try {			
+			Statement stmt = connection.createStatement();	
+			ResultSet rs = stmt.executeQuery(query);			
+			
+			while(rs.next()) {
+				VirtualMember user = new VirtualMember();				
+				
+				user.setUserId(rs.getString("user_id"));
+				user.setUserType(rs.getInt("user_type"));
+				user.setComment(rs.getString("comment"));
+				user.setUserName(rs.getString("user_name"));
+				
+				result.add(user);
+			}
+			stmt.close();
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+			System.out.println("getExistBuddyID : " + e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}	
+			
+		return result;
+	}	
+}

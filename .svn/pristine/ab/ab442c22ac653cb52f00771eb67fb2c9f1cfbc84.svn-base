@@ -1,0 +1,55 @@
+package com.nomadsoft.chat.db.dto;
+
+public class MemberItem {
+	String memberID = "";						
+	String serverID = "";
+	String pushKey = "";
+	String os = "";	
+	int pushType = 0;
+	int statusWindows = 0;
+	int notification = 0;
+	
+	public int getNotification() {
+		return notification;
+	}
+	public void setNotification(int notification) {
+		this.notification = notification;
+	}
+	public String getPushKey() {
+		return pushKey;
+	}
+	public void setPushKey(String pushKey) {
+		this.pushKey = pushKey;
+	}
+	public String getOs() {
+		return os;
+	}
+	public void setOs(String os) {
+		this.os = os;
+	}
+	public int getPushType() {
+		return pushType;
+	}
+	public void setPushType(int pushType) {
+		this.pushType = pushType;
+	}
+	public String getMemberID() {
+		return memberID;
+	}
+	public void setMemberID(String memberID) {
+		this.memberID = memberID;
+	}
+	public String getServerID() {
+		return serverID;
+	}
+	public void setServerID(String serverID) {
+		this.serverID = serverID;
+	}
+	public int getStatusWindows() {
+		return statusWindows;
+	}
+	public void setStatusWindows(int statusWindows) {
+		this.statusWindows = statusWindows;
+	}
+		
+}

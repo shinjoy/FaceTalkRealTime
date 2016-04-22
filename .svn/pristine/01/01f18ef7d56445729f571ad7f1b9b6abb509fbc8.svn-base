@@ -1,0 +1,236 @@
+package com.nomadsoft.chat.openServer;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.SimpleChannelInboundHandler;
+
+import java.io.UnsupportedEncodingException;
+
+import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.nomadsoft.chat.db.dao.UserDao;
+import com.nomadsoft.chat.db.dto.Param;
+import com.nomadsoft.chat.encryption.CryptoNew;
+import com.nomadsoft.chat.encryption.CryptoSeedNet;
+import com.nomadsoft.chat.log.Log;
+import com.nomadsoft.chat.utility.IntByteConvert;
+
+/**
+ * Handles a server-side channel.
+ */
+public class ChatServerHandler extends SimpleChannelInboundHandler<Object> {
+	public static final byte[] packetHeader = {0x03, 0x02, 0x07, 0x08, 0x04, 0x07, 0x09,0x01};
+	
+	public ChatServerHandler() {  
+    	
+    }
+    
+    @Override
+    public void channelActive(final ChannelHandlerContext ctx) throws Exception {
+    	
+    	try {    	    		
+    		ChatUserContext.getChannels().add(ctx.channel());
+    		ChatUserContext.getContextmap().put(ctx.channel(), new ChatUserContext(ctx.channel()));    	
+        	
+        	//Log.i(ctx.name() + "Size : " + ChatUserContext.getChannels().size());	
+		} catch (Exception e) {
+			// TODO: handle exception
+	    	Log.i(e.getMessage());
+		}
+    }
+
+    
+	@Override
+    public void channelInactive(ChannelHandlerContext ctx)  {
+    	//Log.i("channelInactive : " + ChatUserContext.getChannels().size());
+    	
+    	try {
+    		ChatUserContext context = ChatUserContext.getContextmap().get(ctx.channel());
+    		if("".equals(context.getId()) == false) {  
+    			if(context.getMode().equals("0")) {
+    				ChatUserContext.getUserContextMap().remove(context.getId());
+    				//DB 로그인 상태 변경.
+    				UserDao.updateStatus(context.getId(), 0);
+    			} else if(context.getMode().equals("2")) {
+        			ChatUserContext.getPcUserContextMap().remove(context.getId());
+        			UserDao.updateStatusWindows(context.getId(), 0);	
+        			
+        		
+        			if(context.getVmList() != null) {        				
+        				for(ChatUserContext cuc : context.getVmList()) {
+        					ChatUserContext.getPcUserContextMap().remove(cuc.getId());        					
+        					UserDao.updateStatusWindows(cuc.getId(), 0);
+        				}        				
+        			}        			
+    			} else {
+    				ChatUserContext.getRemoteContextMap().remove(context.getId());
+    			}    			
+    		}    		
+    		
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		}
+    	
+    	try {
+    		ChatUserContext.getContextmap().remove(ctx.channel());
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		}    	
+    }
+
+    @Override
+    public void messageReceived(ChannelHandlerContext ctx, Object msg) throws Exception {
+        // Send the received message to all channels but the current one.
+    	try {    
+//msgIDx++;
+//Log.i("msg : " + msgIDx);    	
+    		
+    		ByteBuf in = (ByteBuf) msg;
+        	if (in.readableBytes() > 13) {    		
+        		
+        		//byte[] rHeader = new byte[8]; 
+    			//in.getBytes(0, rHeader, 0, 8);
+    			
+    			if (packetHeader[0] == in.getByte(0) &&
+    					packetHeader[1] == in.getByte(1) &&
+    					packetHeader[2] == in.getByte(2) &&
+    					packetHeader[3] == in.getByte(3) &&
+    					packetHeader[4] == in.getByte(4) &&
+    					packetHeader[5] == in.getByte(5) &&
+    					packetHeader[6] == in.getByte(6) &&
+    					packetHeader[7] == in.getByte(7)
+    					) {
+    			
+    	    		int pt = in.getByte(8);
+    	    		int st = in.getByte(9);    
+    	    		
+    	    		int size = IntByteConvert.fromByte(in.getByte(10), in.getByte(11), in.getByte(12), in.getByte(13));    		
+    	    		int rSize = in.readableBytes();// in.capacity() - 6-8;
+    	    		
+    	    		if(rSize >= size) {
+    	    			byte[] data = new byte[size];
+    	        		in.getBytes(14, data, 0, size);
+
+    	        		//암호화.
+    	        		try {
+    	        			data = CryptoNew.decrypt(data);//CryptoSeedNet.decrypt(data);
+
+        	        		ChatUserContext context = ChatUserContext.getContextmap().get(ctx.channel());
+        	        		ChatEventHandler.onReceived(ctx.channel(), pt, st, data, null, context);	
+						} catch (Exception e) {
+							// TODO: handle exception
+							Log.i("decrytion : " + e.getMessage());
+						}
+    	        		    	        		
+    	    		} else {
+    	    			//데이터 덜들어옴.
+    	    			Log.i("insufficient size : " +  size + " rb : " + rSize);
+    	    		}   
+    			} else {		
+    				Log.i("header error ");
+    			}
+        	} else {    
+        		Log.i("insufficient siz2 : " + in.readableBytes());
+        	}
+        	
+		} catch (Exception e) {
+			// TODO: handle exception
+	    	//Log.l(Level.WARNING,"Unexpected exception from downstream.", e);
+		}
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+    	//Log.l(Level.WARNING, "Unexpected exception from downstream.", cause);
+        ctx.close();
+    }
+    
+    void broadcastsample(ChannelHandlerContext ctx, String msg) {
+    	for (Channel c: ChatUserContext.getChannels()) {
+            if (c != ctx.channel()) {
+                c.writeAndFlush("[" + ctx.channel().remoteAddress() + "] " +
+                        msg + '\n');
+            } else {
+                c.writeAndFlush("[you] " + msg + '\n');
+            }
+        }
+
+        // Close the connection if the client has sent 'bye'.
+        if ("bye".equals(msg.toLowerCase())) {
+            ctx.close();
+        }
+    }
+    
+    public static JsonElement formatJsonData(byte[] data) {
+    	JsonElement result = null;
+    	
+    	try {
+			String msg = new String(data, "UTF-8");			
+			result = JsonDecoder.decodeJson(msg);
+		} catch (UnsupportedEncodingException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}        		
+		
+    	return result;
+    }
+    
+    public static void sendData(Channel channel, int pt, int st, Param packet) { 
+    	try {
+    		/*
+    		Packet pk = new Packet();
+    		pk.setPt(pt);
+    		pk.setSt(st);
+    		pk.setParam(packet);
+    		channel.writeAndFlush(pk);
+    		*/
+    	
+			Gson gson = new Gson();
+			String resMsg = gson.toJson(packet);	
+			byte[] data = resMsg.getBytes("UTF-8");		
+			//int size = data.length + 8 + 4 + 2;
+    		data = CryptoNew.encrypt(data);
+			
+			ByteBuf ba = channel.alloc().directBuffer();// buffer();
+			ba.writeBytes(packetHeader);
+			ba.writeByte((byte) pt);
+			ba.writeByte((byte) st);
+			byte[] sizeData = IntByteConvert.toByteArray(data.length);
+			ba.writeBytes(sizeData);
+			ba.writeBytes(data);			
+			channel.writeAndFlush(ba);
+		} catch (Exception e) {
+			// TODO: handle exception
+			e.printStackTrace();
+		}
+    }
+    
+    
+
+    public static void sendRawData(Channel channel, int pt, int st, String packet) { 
+    	try {
+    		
+			byte[] data = packet.getBytes("UTF-8");		
+			//int size = data.length + 8 + 4 + 2;
+    		//암호화.
+    		data = CryptoNew.encrypt(data);
+    		
+			
+			ByteBuf ba = channel.alloc().directBuffer();// buffer();
+			ba.writeBytes(packetHeader);
+			ba.writeByte((byte) pt);
+			ba.writeByte((byte) st);
+			byte[] sizeData = IntByteConvert.toByteArray(data.length);
+			ba.writeBytes(sizeData);
+			ba.writeBytes(data);			
+			channel.writeAndFlush(ba);
+		} catch (Exception e) {
+			// TODO: handle exception
+			e.printStackTrace();
+		}
+    }
+}
+

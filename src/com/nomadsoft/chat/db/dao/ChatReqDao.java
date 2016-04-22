@@ -1,0 +1,239 @@
+package com.nomadsoft.chat.db.dao;
+
+import io.netty.channel.Channel;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.LinkedList;
+
+import javax.swing.text.AbstractDocument.Content;
+
+import org.json.simple.JSONArray;
+import org.json.simple.JSONObject;
+import org.json.simple.parser.JSONParser;
+
+import com.nomadsoft.chat.config.Constants;
+import com.nomadsoft.chat.db.dto.BoardImageFile;
+import com.nomadsoft.chat.db.dto.ChatReq;
+import com.nomadsoft.chat.db.dto.ChatRoom;
+import com.nomadsoft.chat.log.Log;
+import com.nomadsoft.chat.openServer.ChatUserContext;
+import com.nomadsoft.chat.utility.ChatDate;
+import com.nomadsoft.chat.utility.MsgKey;
+
+public class ChatReqDao {
+/*
+	public static void deleteChatReq(String MSG_KEY) {
+		
+
+		Connection connection = DBConnectionPool.getConnection();		
+		try {
+			 
+			String query = 
+					"DELETE FROM T_CHAT_REQ WHERE MSG_KEY = ? ";
+
+			PreparedStatement stmt = connection.prepareStatement(query);
+			stmt.setString(1, MSG_KEY);
+			
+			stmt.executeUpdate();			
+			stmt.close(); 
+		} catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		
+	}
+*/
+	public static void loadChatReq() {
+		
+		Connection connection = DBConnectionPool.getConnection();				
+		try {				 
+			String query = "SELECT Top 100 cq_id, ROOM_IDX, REQ_TYPE, MEMBER_ID, MEMBER_NAME,"
+					+ " msg_key, msg_date, contents, REG_DATE, PARAM1, PARAM2, thumb1, thumb2, thumb3, fileName1, fileName2, fileName3, targetid  " 
+				+ "FROM t_nf_chat_req order by reg_date desc "; 
+			
+			Statement statement = connection.createStatement();
+			ResultSet rs = statement.executeQuery(query);	
+			
+			Statement stmt = connection.createStatement();
+			while(rs.next()) {
+									
+				ChatReq chatreq = new ChatReq();
+				chatreq.setCqId(rs.getInt("cq_id"));
+				chatreq.setReqTYPE(rs.getString("REQ_TYPE"));
+				chatreq.setRoomIDX(rs.getString("ROOM_IDX"));				
+				chatreq.setMemberID(rs.getString("MEMBER_ID"));
+				chatreq.setMemberName(rs.getString("MEMBER_NAME"));
+				chatreq.setRegDATE(rs.getString("REG_DATE"));
+				chatreq.setParam1(rs.getString("PARAM1"));
+				chatreq.setParam2(rs.getString("PARAM2"));				
+				
+				
+				chatreq.setMsgKey(rs.getString("msg_key"));
+				chatreq.setMsgDate(rs.getString("msg_date"));
+				chatreq.setContents(rs.getString("contents"));
+				
+				chatreq.setThumb1(rs.getString("thumb1"));
+				chatreq.setThumb2(rs.getString("thumb2"));
+				chatreq.setThumb3(rs.getString("thumb3"));
+				
+				chatreq.setFileName1(rs.getString("fileName1"));
+				chatreq.setFileName2(rs.getString("fileName2"));
+				chatreq.setFileName3(rs.getString("fileName3"));
+				chatreq.setTargetid(ChatDBhelper.getSafeString(rs.getString("targetid")));
+				
+				
+				String sql = "delete from t_nf_chat_req where cq_id = " + chatreq.getCqId();
+				stmt.execute(sql);		
+				
+				
+				//--------------------
+				
+				
+				//���� ���.		
+				if( chatreq.getReqTYPE().equals("10") ) { //탈퇴 or 사용중지
+					
+					//�Ű�, �Ҹ�, ��� ����. ����, ��ġ, ���.
+					long roomIdx = 0;
+					//내가 속해있는 모든 방들
+					query = " select chat_room_seq from t_nf_chat_member where user_id = ? ";
+					PreparedStatement stmtMy = connection.prepareStatement(query);
+					stmtMy.setString(1, chatreq.getMemberID());
+					rs = stmtMy.executeQuery(); 
+					while(rs.next()){
+						roomIdx = rs.getLong("chat_room_seq");
+						ChatDao.removeMember(null, null, "39",
+								roomIdx, Constants.adminId, chatreq.getMemberID());
+						
+					}
+					stmtMy.close();
+				}
+				if( chatreq.getReqTYPE().equals("12") ) { //방삭제
+					
+				
+					//long roomIdx = 0;
+					String userId="";
+					//내가 속해있는 모든 방들
+					query = " select user_id from t_nf_chat_member where chat_room_seq = ? ";
+					PreparedStatement stmtMy = connection.prepareStatement(query);
+					stmtMy.setLong(1,Long.parseLong(chatreq.getRoomIDX()));
+					rs = stmtMy.executeQuery(); 
+					while(rs.next()){
+						userId = rs.getString("user_id");
+						ChatDao.removeRoom(null, null, "39",Long.parseLong(chatreq.getRoomIDX()), Constants.adminId, userId);
+						
+						
+					}
+					stmtMy.close();
+				}
+			}
+			
+					
+				
+			stmt.close();
+			statement.close();
+		} catch (Exception e) {
+			// TODO: handle exception
+			Log.i(e.getMessage());
+		} finally {
+			try {
+				connection.close();
+			} catch (Exception e2) {
+				// TODO: handle exception
+			}
+		}
+		
+		
+	}
+	
+	
+	public static String getFileJson(ArrayList<BoardImageFile> files) {
+		String result = "";
+		
+		try {
+			if(files.size() > 0) {
+				JSONObject jObject = new JSONObject();
+				JSONArray jsArray = new JSONArray();
+					
+				BoardImageFile moveData = null;
+				BoardImageFile locationData = null;
+				
+				for (int i = 0; i < files.size(); i++) {
+					BoardImageFile bItem =  files.get(i);
+					
+					if(bItem.getFileType().equals("img")) {
+						JSONObject jItem = new JSONObject();
+						jItem.put("type", bItem.getFileType());					
+						jItem.put("thumb", bItem.getThumbFilename_server());
+						
+						if(bItem.getFileType().equals("location")) {
+							jItem.put("latitude", bItem.getFilename_normal());
+							jItem.put("longtude", bItem.getFilename_server());
+							
+						} else {
+							jItem.put("file", bItem.getFilename_server());	
+						}
+						
+						jsArray.add(jItem);
+					} else if(bItem.getFileType().equals("mov")) {
+						moveData = bItem;
+					} else if(bItem.getFileType().equals("location")) {
+						locationData = bItem;
+					}
+				}
+				
+				
+				if(moveData != null) {
+					JSONObject jItem = new JSONObject();
+					jItem.put("type", moveData.getFileType());					
+					jItem.put("thumb", moveData.getThumbFilename_server());
+					
+					if(moveData.getFileType().equals("location")) {
+						jItem.put("latitude", moveData.getFilename_normal());
+						jItem.put("longtude", moveData.getFilename_server());
+						
+					} else {
+						jItem.put("file", moveData.getFilename_server());	
+					}
+					
+					jsArray.add(jItem);
+				}
+				
+				if(locationData != null) {
+					JSONObject jItem = new JSONObject();
+					jItem.put("type", locationData.getFileType());					
+					jItem.put("thumb", locationData.getThumbFilename_server());
+					
+					if(locationData.getFileType().equals("location")) {
+						jItem.put("latitude", locationData.getFilename_normal());
+						jItem.put("longtude", locationData.getFilename_server());
+						
+					} else {
+						jItem.put("file", locationData.getFilename_server());	
+					}
+					
+					jsArray.add(jItem);
+				}
+				
+				jObject.put("items", jsArray);
+				result = jObject.toString();
+			}
+			
+		} catch (Exception e) {
+			System.out.println("Exception occured");
+		}
+		
+		return result;
+	}
+}

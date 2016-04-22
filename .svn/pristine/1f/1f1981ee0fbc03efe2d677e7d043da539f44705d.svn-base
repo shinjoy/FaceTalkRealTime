@@ -1,0 +1,6 @@
+package com.nomadsoft.chat.config;
+
+
+public class Constants {
+	public static String adminId = "_admin_";
+}

@@ -1,0 +1,76 @@
+package com.nomadsoft.chat;
+
+import java.util.LinkedList;
+
+import org.json.simple.JSONObject;
+
+import com.nomadsoft.chat.config.Config;
+import com.nomadsoft.chat.config.Constants;
+import com.nomadsoft.chat.config.PushServiceList;
+import com.nomadsoft.chat.config.ServerList;
+import com.nomadsoft.chat.db.dao.ChatDao;
+import com.nomadsoft.chat.db.dao.DBConnectionPool;
+import com.nomadsoft.chat.db.dto.ChatRoom;
+import com.nomadsoft.chat.db.dto.ServerInfo;
+import com.nomadsoft.chat.linkedNetwork.Client;
+import com.nomadsoft.chat.log.Log;
+import com.nomadsoft.chat.noticeService.ChatReqThread;
+import com.nomadsoft.chat.noticeService.NoticeSendThread;
+import com.nomadsoft.chat.openServer.ChatServer;
+import com.nomadsoft.redis.RedisClient;
+import com.nomadsoft.util.push.NoticePushSendThread;
+import com.nomadsoft.util.push.PushSendThread;
+
+public class MainService {
+
+
+
+	public static void main(String[] args) {
+		// TODO Auto-generated method stub
+		
+		try {		
+			RedisClient.getInstance();
+			Config.getInstance();
+			String filename = Config.getInstance().getLogFileName();
+			Log.setLoggerName(filename);
+		
+			DBConnectionPool.loadDataSource(Config.getInstance().getUrlSql()
+					, Config.getInstance().getDbUserName(), Config.getInstance().getDbPass());			
+				
+			PushServiceList.loadServiceList();
+			
+			Log.i("Service Start" + Config.getInstance().getServerId());
+			Log.i(" id : " + Config.getInstance().getServerId());
+			Log.i(" logfile : " + Config.getInstance().getLogFileName());
+			
+			ServerList serverList = ServerList.getInstance();			
+			ServerInfo localServer = serverList.getLocalServer();
+			
+			PushSendThread.startThread();
+			NoticePushSendThread.startThread();
+			NoticeSendThread.startThread();
+			ChatReqThread.startThread();
+			
+		
+			Client client = Client.getInstance();
+			client.start();
+			
+			Log.i(" local address : " + localServer.getAddress());			
+			Log.i(" local Port : " + localServer.getPort());
+			
+			
+			if(localServer.getStatus() == 1) {
+				int port = localServer.getPort();
+				new ChatServer(port).run();
+			}
+			    
+		} catch (Exception e) {
+			// TODO: handle exception
+			e.printStackTrace();
+		}
+	}
+
+}
+
+//������ os���� fileopen limit
+//http://serverfault.com/questions/361416/increasing-the-number-of-outbound-tcp-connections
